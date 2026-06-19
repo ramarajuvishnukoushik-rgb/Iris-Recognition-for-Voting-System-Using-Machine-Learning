@@ -1,0 +1,36 @@
+from keras.models import Sequential
+from keras.layers import Convolution2D, MaxPooling2D, Flatten, Dense
+import pickle
+import json
+
+# Ensure X_train and Y_train are loaded into your environment before running this block
+
+classifier = Sequential()
+classifier.add(Convolution2D(32, 3, 3, input_shape =(64,64,3), activation = 'relu'))
+classifier.add(MaxPooling2D(pool_size = (2, 2)))
+classifier.add(Convolution2D(32, 3, 3, activation = 'relu'))
+classifier.add(MaxPooling2D(pool_size =(2,2)))
+classifier.add(Flatten())
+classifier.add(Dense(output_dim = 256, activation = 'relu'))
+classifier.add(Dense(output_dim = 108, activation = 'softmax'))
+print(classifier.summary())
+
+classifier.compile(optimizer = 'adam', loss = 'categorical_crossentropy', metrics = ['accuracy'])
+hist = classifier.fit(X_train, Y_train, batch_size = 16, epochs = 60, shuffle=True, verbose=2)
+classifier.save_weights('model/model_weights.h5')
+
+model_json = classifier.to_json()
+with open("model/model.json", "w") as json_file:
+    json_file.write(model_json)
+
+f = open('model/history.pckl', 'wb')
+pickle.dump(hist.history, f)
+f.close()
+
+f = open('model/history.pckl', 'rb')
+data = pickle.load(f)
+f.close()
+
+acc = data['accuracy']
+accuracy = acc[9] * 100 
+print("Training Model Accuracy = " + str(accuracy))

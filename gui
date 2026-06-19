@@ -1,0 +1,342 @@
+Iris Recognition for Voting System Using Machine Learning
+-----------------------------------------------------------
+Reconstructed project source.
+
+This script was rebuilt from the project report after the original
+source files were lost during a laptop migration. The core logic
+(Hough Circle iris feature extraction, CNN architecture, training
+and prediction flow, and Tkinter GUI layout) follows the design
+described and partially shown in the project report. Re-verify
+against your own results before resubmitting/publishing.
+"""
+
+import os
+import pickle
+import tkinter
+from tkinter import filedialog
+from tkinter import *
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image, ImageTk
+
+from keras.models import Sequential, model_from_json
+from keras.layers import Convolution2D, MaxPooling2D, Flatten, Dense
+
+# --------------------------------------------------------------------------
+# Globals
+# --------------------------------------------------------------------------
+filename = None
+model = None
+count = 0
+miss = []
+
+IMG_SIZE = 64  # input size expected by the CNN (64x64x3)
+
+
+# --------------------------------------------------------------------------
+# Feature extraction: Hough Circle Transform for iris localization
+# --------------------------------------------------------------------------
+def getIrisFeatures(image):
+    """
+    Locate and crop the iris region from an eye image using the
+    Hough Circle Transform, then save the cropped iris as test.png.
+    Returns the cropped iris image (grayscale) read back from disk.
+    """
+    global count
+
+    img = cv2.imread(image, 0)
+    img = cv2.medianBlur(img, 5)
+    cimg = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    circles = cv2.HoughCircles(
+        img, cv2.HOUGH_GRADIENT, 1, 10,
+        param1=63, param2=70, minRadius=0, maxRadius=0
+    )
+
+    if circles is not None:
+        height, width = img.shape
+        mask = np.zeros((height, width), np.uint8)
+
+        for i in circles[0, :]:
+            cv2.circle(cimg, (int(i[0]), int(i[1])), int(i[2]), (0, 0, 0))
+            cv2.circle(mask, (int(i[0]), int(i[1])), int(i[2]), (255, 255, 255), thickness=-1)
+
+            masked_data = cv2.bitwise_and(cimg, cimg, mask=mask)
+            _, thresh = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
+
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if len(contours) == 0:
+                continue
+
+            x, y, w, h = cv2.boundingRect(contours[0])
+            crop = img[y:y + h, x:x + w]
+
+            if crop.size == 0:
+                continue
+
+            cv2.imwrite("test.png", crop)
+    else:
+        count = count + 1
+        miss.append(image)
+
+    if os.path.exists("test.png"):
+        return cv2.imread("test.png")
+    else:
+        # fall back to the original image if no circle was detected
+        return cv2.imread(image)
+
+
+# --------------------------------------------------------------------------
+# Dataset loading
+# --------------------------------------------------------------------------
+def uploadDataset():
+    global filename
+    filename = filedialog.askdirectory(initialdir=".")
+    text.delete('1.0', END)
+    text.insert(END, str(filename) + " loaded\n\n")
+
+
+# --------------------------------------------------------------------------
+# Build / train the CNN from the dataset, or load an already trained model
+# --------------------------------------------------------------------------
+def generateModel():
+    """
+    Builds the X_train / Y_train arrays from the dataset folder (if not
+    already cached as .npy files), trains the CNN, and saves the model.
+    If a saved model already exists, it is loaded instead of retraining.
+    """
+    global model, filename
+
+    text.delete('1.0', END)
+
+    if not os.path.exists('model'):
+        os.makedirs('model')
+
+    # Build dataset arrays if not already cached
+    if not (os.path.exists('model/X.txt.npy') and os.path.exists('model/Y.txt.npy')):
+        if filename is None:
+            text.insert(END, "Please upload the iris dataset first.\n")
+            return
+        buildDatasetArrays(filename)
+
+    X_train = np.load('model/X.txt.npy')
+    Y_train = np.load('model/Y.txt.npy')
+
+    text.insert(END, 'Dataset contains total ' + str(X_train.shape[0]) +
+                ' iris images from ' + str(Y_train.shape[1]) + " classes\n")
+
+    if os.path.exists('model/model.json'):
+        # Load existing trained model
+        with open('model/model.json', "r") as json_file:
+            loaded_model_json = json_file.read()
+        model = model_from_json(loaded_model_json)
+        model.load_weights("model/model_weights.h5")
+        print(model.summary())
+
+        with open('model/history.pckl', 'rb') as f:
+            data = pickle.load(f)
+
+        acc = data['accuracy']
+        accuracy = acc[-1] * 100
+        text.insert(END, "CNN Model Prediction Accuracy = " + str(accuracy) + "\n\n")
+        text.insert(END, "See console / terminal to view CNN layers\n")
+    else:
+        # Train a new model
+        num_classes = Y_train.shape[1]
+
+        classifier = Sequential()
+        classifier.add(Convolution2D(32, (3, 3), input_shape=(IMG_SIZE, IMG_SIZE, 3), activation='relu'))
+        classifier.add(MaxPooling2D(pool_size=(2, 2)))
+        classifier.add(Convolution2D(32, (3, 3), activation='relu'))
+        classifier.add(MaxPooling2D(pool_size=(2, 2)))
+        classifier.add(Flatten())
+        classifier.add(Dense(256, activation='relu'))
+        classifier.add(Dense(num_classes, activation='softmax'))
+
+        print(classifier.summary())
+
+        classifier.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        hist = classifier.fit(X_train, Y_train, batch_size=16, epochs=60, shuffle=True, verbose=2)
+
+        classifier.save_weights('model/model_weights.h5')
+        model_json = classifier.to_json()
+        with open("model/model.json", "w") as json_file:
+            json_file.write(model_json)
+
+        with open('model/history.pckl', 'wb') as f:
+            pickle.dump(hist.history, f)
+
+        model = classifier
+
+        acc = hist.history['accuracy']
+        accuracy = acc[-1] * 100
+        text.insert(END, "Training complete.\n")
+        text.insert(END, "CNN Model Prediction Accuracy = " + str(accuracy) + "\n\n")
+
+
+def buildDatasetArrays(dataset_path):
+    """
+    Walks the dataset folder (expects one subfolder per person/class,
+    each containing that person's iris images), extracts iris features
+    via Hough Circles, resizes to IMG_SIZE x IMG_SIZE, and saves the
+    resulting X (images) and Y (one-hot labels) arrays to model/.
+    """
+    X = []
+    Y = []
+
+    classes = sorted([
+        d for d in os.listdir(dataset_path)
+        if os.path.isdir(os.path.join(dataset_path, d))
+    ])
+    class_to_index = {c: i for i, c in enumerate(classes)}
+
+    for cls in classes:
+        cls_folder = os.path.join(dataset_path, cls)
+        for fname in os.listdir(cls_folder):
+            if not fname.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                continue
+            fpath = os.path.join(cls_folder, fname)
+            try:
+                iris_img = getIrisFeatures(fpath)
+                iris_img = cv2.resize(iris_img, (IMG_SIZE, IMG_SIZE))
+                if len(iris_img.shape) == 2:
+                    iris_img = cv2.cvtColor(iris_img, cv2.COLOR_GRAY2BGR)
+                X.append(iris_img)
+                Y.append(class_to_index[cls])
+            except Exception as e:
+                print(f"Skipping {fpath}: {e}")
+
+    X = np.array(X, dtype=np.float32) / 255.0
+    Y = np.array(Y)
+
+    num_classes = len(classes)
+    Y_onehot = np.zeros((len(Y), num_classes))
+    for i, label in enumerate(Y):
+        Y_onehot[i, label] = 1
+
+    np.save('model/X.txt.npy', X)
+    np.save('model/Y.txt.npy', Y_onehot)
+
+    with open('model/classes.pckl', 'wb') as f:
+        pickle.dump(classes, f)
+
+
+# --------------------------------------------------------------------------
+# Accuracy / Loss graph
+# --------------------------------------------------------------------------
+def graph():
+    if not os.path.exists('model/history.pckl'):
+        text.insert(END, "Train or load a model first.\n")
+        return
+
+    with open('model/history.pckl', 'rb') as f:
+        data = pickle.load(f)
+
+    acc = data['accuracy']
+    loss = data['loss']
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(loss, color='red', marker='o', label='Loss')
+    plt.plot(acc, color='green', marker='o', label='Accuracy')
+    plt.title('CNN Accuracy & Loss Graph')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy / Loss')
+    plt.legend(loc='upper right')
+    plt.show()
+
+
+# --------------------------------------------------------------------------
+# Predict identity from a test iris image
+# --------------------------------------------------------------------------
+def predict():
+    global model
+
+    if model is None:
+        text.insert(END, "Generate or load the CNN model first.\n")
+        return
+
+    test_image_path = filedialog.askopenfilename(initialdir="testSamples")
+    if not test_image_path:
+        return
+
+    iris_img = getIrisFeatures(test_image_path)
+    display_img = iris_img.copy()
+
+    iris_img = cv2.resize(iris_img, (IMG_SIZE, IMG_SIZE))
+    if len(iris_img.shape) == 2:
+        iris_img = cv2.cvtColor(iris_img, cv2.COLOR_GRAY2BGR)
+
+    img_array = iris_img.astype(np.float32) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+
+    preds = model.predict(img_array)
+    predicted_class = np.argmax(preds)
+
+    # Map back to original folder/class name if available
+    person_label = str(predicted_class)
+    if os.path.exists('model/classes.pckl'):
+        with open('model/classes.pckl', 'rb') as f:
+            classes = pickle.load(f)
+        if predicted_class < len(classes):
+            person_label = classes[predicted_class]
+
+    # Show extracted iris features window
+    cv2.imshow("Iris features extracted from image", display_img)
+
+    # Show original eye image with prediction overlay
+    orig = cv2.imread(test_image_path)
+    orig = cv2.resize(orig, (400, 300))
+    cv2.putText(orig, f"Person ID Predicted: {person_label}", (5, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    cv2.imshow(f"Person ID Predicted from Iris Recognition is: {person_label}", orig)
+
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    text.insert(END, f"Person ID Predicted from Iris Recognition is: {person_label}\n")
+
+
+# --------------------------------------------------------------------------
+# GUI setup
+# --------------------------------------------------------------------------
+main = tkinter.Tk()
+main.title("Iris Recognition using Machine Learning Technique")
+main.geometry("1300x1200")
+main.config(bg='#90EE90')
+
+title_font = ('times', 18, 'bold')
+button_font = ('times', 13, 'bold')
+
+title_label = Label(
+    main,
+    text="Iris Recognition using Machine Learning Technique",
+    bg='orange', fg='black', font=title_font, height=2
+)
+title_label.pack(fill=X)
+
+text = Text(main, height=25, width=150, font=('times', 12))
+text.pack(pady=20)
+scroll = Scrollbar(text)
+text.configure(yscrollcommand=scroll.set)
+
+button_frame = Frame(main, bg='#90EE90')
+button_frame.pack(pady=10)
+
+Button(button_frame, text="Upload Iris Dataset", command=uploadDataset,
+       font=button_font, bg='#FFB6C1').grid(row=0, column=0, padx=10)
+
+Button(button_frame, text="Generate & Load CNN Model", command=generateModel,
+       font=button_font, bg='#FFB6C1').grid(row=0, column=1, padx=10)
+
+Button(button_frame, text="Accuracy & Loss Graph", command=graph,
+       font=button_font, bg='#FFB6C1').grid(row=0, column=2, padx=10)
+
+Button(button_frame, text="Upload Iris Test Image & Recognize", command=predict,
+       font=button_font, bg='#FFB6C1').grid(row=0, column=3, padx=10)
+
+Button(button_frame, text="Exit", command=main.destroy,
+       font=button_font, bg='#FFB6C1').grid(row=0, column=4, padx=10)
+
+main.mainloop()

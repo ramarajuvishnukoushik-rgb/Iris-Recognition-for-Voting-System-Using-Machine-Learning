@@ -1,0 +1,81 @@
+import tkinter
+from tkinter import filedialog, END
+import cv2
+import numpy as np
+import os
+import pickle
+from keras.models import model_from_json
+
+main = tkinter.Tk()
+main.title("Iris Recognition using Machine Learning Technique") #designing main screen
+main.geometry("1300x1200")
+
+# Note: You will need to define the 'text' widget (e.g., text = tkinter.Text(main)) to make the insertions work.
+
+global filename
+global model
+global count
+count = 0
+miss = []
+
+def getIrisFeatures(image):
+    global count
+    img = cv2.imread(image,0)
+    img = cv2.medianBlur(img,5)
+    cimg = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
+    circles=cv2.HoughCircles(img,cv2.HOUGH_GRADIENT,1,10,param1=63,param2=70,minRadius=0,maxRadius=0)
+    
+    if circles is not None:
+        height, width = img.shape
+        r=0
+        mask = np.zeros((height, width), np.uint8)
+        for i in circles[0,:]:
+            cv2.circle(cimg, (i[0],i[1]),int(i[2]),(0,0,0))
+            cv2.circle(mask,(i[0],i[1]),int(i[2]),(255,255,255), thickness=0)
+            
+        blank_image = cimg[:int(i[1]),:int(i[1])]
+        masked_data = cv2.bitwise_and(cimg, cimg, mask=mask)
+        _thresh = cv2.threshold(mask, 1,255,cv2.THRESH_BINARY)
+        contours=cv2.findContours(_thresh,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        x,y,w,h = cv2.boundingRect(contours[0][0])
+        crop = img[y:y+h,x:x+w]
+        r=i[2]
+        cv2.imwrite("test.png",crop)
+    else:
+        count = count + 1
+        miss.append(image)
+    return cv2.imread("test.png")
+
+def uploadDataset():
+    global filename
+    filename = filedialog.askdirectory(initialdir=".")
+    text.delete('1.0', END)
+    text.insert(END, filename + " loaded\n\n")
+
+def loadModel():
+    global model
+    text.delete('1.0', END)
+    X_train = np.load('model/X.txt.npy')
+    Y_train = np.load('model/Y.txt.npy')
+    print(X_train.shape)
+    print(Y_train.shape)
+    text.insert(END, 'Dataset contains total '+str(X_train.shape[0])+' iris images from '+str(Y_train.shape[1])+"\n")
+    
+    if os.path.exists('model/model.json'):
+        with open('model/model.json', "r") as json_file:
+            loaded_model_json = json_file.read()
+        model = model_from_json(loaded_model_json)
+        model.load_weights("model/model_weights.h5")
+        model._make_predict_function()
+        print(model.summary())
+        
+        f = open('model/history.pckl', 'rb')
+        data = pickle.load(f)
+        f.close()
+        
+        acc = data['accuracy']
+        accuracy = acc[59]*100
+        text.insert(END, "CNN Model Prediction Accuracy ="+str(accuracy)+"\n\n")
+        text.insert(END, "See Black Console to view CNN layers\n")
+
+main.mainloop()
